@@ -151,15 +151,21 @@ def extract_panels_with_playwright(chapter_url, local_dir, custom_selector=""):
 
                     parsed = urlparse(url)
                     original_fname = os.path.basename(parsed.path)
-                    base_name, ext = os.path.splitext(original_fname)
+                    _, ext = os.path.splitext(original_fname)
 
-                    if not ext or ext.lower() not in [".jpg", ".jpeg", ".png", ".webp"]:
-                        ext = ".webp" if ".webp" in url_lower else ".jpg"
-
-                    if base_name.isdigit():
-                        final_fname = f"{int(base_name):03d}{ext}"
+                    # Standardize extension
+                    if not ext or ext.lower() not in [
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp",
+                    ]:
+                      ext = ".webp" if ".webp" in url_lower else ".jpg"
                     else:
-                        final_fname = f"{seq_idx:03d}{ext}"
+                      ext = ext.lower()
+
+                    # Strictly enforce sequential DOM numbering
+                    final_fname = f"{seq_idx:03d}{ext}"
 
                     target_path = os.path.join(local_dir, final_fname)
 
