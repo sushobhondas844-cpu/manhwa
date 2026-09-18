@@ -338,137 +338,238 @@ def get_or_create_target_folder(gc, drive_service, series_name, chapter_num, is_
     return chapter_folder.get("id")
 
 # Module 6: Relocation Engine
-# Module 6: Relocation Engine
 def execute_relocation(gc, drive_service):
+  try:
+    sheet = gc.open_by_key(SPREADSHEET_ID)
+    queue_ws = sheet.worksheet("Download_Queue")
+    records = queue_ws.get_all_records()
+
+    for idx, row in enumerate(records, start=2):
+      status = str(row.get("Download Status", "")).strip().upper()
+
+      if status == "READY TO MOVE":
+        staging_id = str(row.get("Raw Staging Folder ID", "")).strip()
+        series_name = str(row.get("Series Title", "")).strip()
+        chapter_num = str(row.get("Chapter Number", "")).strip()
+        format_type = str(row.get("Format (Long / Short)", "")).strip().lower()
+        is_short = "short" in format_type
+
+        rename_map_raw = str(row.get("Panel Sequence & Rename Map", "")).strip()
+        junk_notes = str(row.get("Link Notes", "")).strip()
+
+        if not staging_id:
+          continue
+
+        try:
+          # Get or create destination folder in Drive
+          target_folder_id = get_or_create_target_folder(
+              gc, drive_service, series_name, chapter_num, is_short
+          )
+
+          rename_dict = {}
+          if rename_map_raw:
+            pairs = re.split(r"[,;\n]", rename_map_raw)
+            for pair in pairs:
+              if ":" in pair:
+                k, v = pair.split(":", 1)
+                rename_dict[k.strip()] = v.strip()
+              elif "->" in pair:
+                k, v = pair.split("->", 1)
+                rename_dict[k.strip()] = v.strip()
+              elif "=" in pair:
+                k, v = pair.split("=", 1)
+                rename_dict[k.strip()] = v.strip()
+
+          query = f"'{staging_id}' in parents and trashed = false"
+          results = (
+              drive_service.files()
+              .list(q=query, fields="files(id, name)")
+              .execute()
+          )
+          files = results.get("files", [])
+
+          for f in files:
+            f_id = f["id"]
+            f_name = f["name"]
+
+            junk_keywords = [
+                j.strip() for j in junk_notes.split(",") if j.strip()
+            ]
+            is_junk = any(junk in f_name for junk in junk_keywords)
+
+            if is_junk:
+              drive_service.files().delete(fileId=f_id).execute()
+              continue
+
+            new_name = rename_dict.get(f_name, f_name)
+            update_body = {"name": new_name} if new_name != f_name else None
+
+            # Move image file to the permanent destination folder
+            drive_service.files().update(
+                fileId=f_id,
+                addParents=target_folder_id,
+                removeParents=staging_id,
+                body=update_body,
+                supportsAllDrives=True,
+            ).execute()
+
+          # Delete empty staging folder
+          drive_service.files().delete(fileId=staging_id).execute()
+
+          queue_ws.update_cell(idx, 5, "Sorted & Relocated")
+          queue_ws.update_cell(idx, 6, "")
+          queue_ws.update_cell(idx, 10, "Ready for Processing")
+
+          # --- TWO-WAY SYNCHRONIZATION ---
+          if not is_short:
+            # 1. Update Long_Form_Tracker (Column F)
+            try:
+              long_ws = sheet.worksheet("Long_Form_Tracker")
+              long_records = long_ws.get_all_records()
+              for l_idx, l_row in enumerate(long_records, start=2):
+                l_title = str(
+                    l_row.get("Title") or l_row.get("Series Title") or ""
+                ).strip()
+                if l_title.lower() == series_name.strip().lower():
+                  curr_dl = l_row.get("Downloaded Chapters", 0)
+                  new_dl = int(curr_dl) + 1 if str(curr_dl).isdigit() else 1
+                  headers = long_ws.row_values(1)
+                  col_dl = (
+                      headers.index("Downloaded Chapters") + 1
+                      if "Downloaded Chapters" in headers
+                      else 6
+                  )
+                  long_ws.update_cell(l_idx, col_dl, new_dl)
+                  break
+
+              # 2. Update Master Controller (Column B)
+              master_sheet = gc.open_by_key(MASTER_CONTROLLER_ID).sheet1
+              m_records = master_sheet.get_all_records()
+              for m_idx, m_row in enumerate(m_records, start=2):
+                if (
+                    str(m_row.get("Name", "")).strip().lower()
+                    == series_name.strip().lower()
+                ):
+                  curr_tot = m_row.get("Total Chapters", 0)
+                  new_tot = int(curr_tot) + 1 if str(curr_tot).isdigit() else 1
+                  master_sheet.update_cell(
+                      m_idx, 2, new_tot
+                  )  # Col B is index 2
+                  break
+            except Exception as sync_err:
+              print(f"[DEBUG] Failed to update chapter counters: {sync_err}")
+
+          else:
+            # 3. For Short-Form: Save target_folder_id into Shorts_Tracker (Column P)
+            try:
+              short_ws = sheet.worksheet("Shorts_Tracker")
+              s_records = short_ws.get_all_records()
+              s_headers = short_ws.row_values(1)
+              s_col = (
+                  s_headers.index("Short Working Folder ID") + 1
+                  if "Short Working Folder ID" in s_headers
+                  else 16
+              )
+              for s_idx, s_row in enumerate(s_records, start=2):
+                s_title = str(
+                    s_row.get("Title") or s_row.get("Series Title") or ""
+                ).strip()
+                if s_title.lower() == series_name.strip().lower():
+                  short_ws.update_cell(s_idx, s_col, target_folder_id)
+                  print(
+                      f"[RELOCATE] Synced {series_name} folder ID to"
+                      f" Shorts_Tracker: {target_folder_id}"
+                  )
+                  break
+            except Exception as s_sync_err:
+              print(
+                  f"[DEBUG] Failed to sync short target folder ID: {s_sync_err}"
+              )
+
+        except Exception as e:
+          print(f"Relocation Error for Row {idx} ({series_name}): {e}")
+
+  except Exception as e:
+    print(f"Relocation Engine Failed: {e}")
+
+
+def execute_staging_cleanup(gc, drive_service):
+  try:
+    sheet = gc.open_by_key(SPREADSHEET_ID)
+
+    # 1. SHORT-FORM CLEANUP
     try:
-        sheet = gc.open_by_key(SPREADSHEET_ID)
-        queue_ws = sheet.worksheet("Download_Queue")
-        records = queue_ws.get_all_records()
+      short_ws = sheet.worksheet("Shorts_Tracker")
+      short_records = short_ws.get_all_records()
+      headers = short_ws.row_values(1)
+      col_folder = (
+          headers.index("Short Working Folder ID") + 1
+          if "Short Working Folder ID" in headers
+          else 16
+      )
 
-        for idx, row in enumerate(records, start=2):
-            status = str(row.get("Download Status", "")).strip().upper()
+      for c_idx, row in enumerate(short_records, start=2):
+        series_name = str(
+            row.get("Title") or row.get("Series Title") or ""
+        ).strip()
+        folder_id = str(row.get("Short Working Folder ID", "")).strip()
+        video_link = str(row.get("YouTube Shorts Link", "")).strip()
+        status = str(row.get("Video Production Status", "")).strip().upper()
 
-            if status == "READY TO MOVE":
-                staging_id = str(row.get("Raw Staging Folder ID", "")).strip()
-                series_name = str(row.get("Series Title", "")).strip()
-                chapter_num = str(row.get("Chapter Number", "")).strip()
-                format_type = str(row.get("Format (Long / Short)", "")).strip().lower()
-                is_short = "short" in format_type
-                
-                rename_map_raw = str(row.get("Panel Sequence & Rename Map", "")).strip()
-                junk_notes = str(row.get("Link Notes", "")).strip()
+        # Trigger cleanup if video link exists or status is Posted, and not already purged
+        if (
+            video_link.startswith("http") or status == "POSTED"
+        ) and "PURGED" not in folder_id.upper():
+          deleted = False
 
-                if not staging_id:
-                    continue
+          # Option 1: Direct ID deletion (if cell contains a valid 25+ char alphanumeric ID)
+          if folder_id and len(folder_id) > 20 and " " not in folder_id:
+            try:
+              drive_service.files().delete(fileId=folder_id).execute()
+              deleted = True
+              print(
+                  f"[CLEANUP] Deleted {series_name} via stored ID: {folder_id}"
+              )
+            except Exception as e:
+              print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
 
-                try:
-                    # PASS GC TO TARGET RESOLVER
-                    target_folder_id = get_or_create_target_folder(
-                        gc, drive_service, series_name, chapter_num, is_short
-                    )
+          # Option 2: Fallback name-based lookup inside Short_Form_Manhwa
+          if not deleted and series_name:
+            safe_name = series_name.replace("'", "\\'")
+            query = (
+                f"'{SHORT_FORM_ROOT_ID}' in parents and name = '{safe_name}'"
+                " and mimeType = 'application/vnd.google-apps.folder' and"
+                " trashed = false"
+            )
+            res = (
+                drive_service.files()
+                .list(q=query, fields="files(id, name)", supportsAllDrives=True)
+                .execute()
+            )
+            matched_folders = res.get("files", [])
+            for mf in matched_folders:
+              try:
+                drive_service.files().delete(fileId=mf["id"]).execute()
+                deleted = True
+                print(
+                    f"[CLEANUP] Deleted {series_name} by folder name:"
+                    f" {mf['id']}"
+                )
+              except Exception as e:
+                print(
+                    f"[DEBUG] Failed to delete name-matched folder"
+                    f" {mf['id']}: {e}"
+                )
 
-                    rename_dict = {}
-                    if rename_map_raw:
-                        pairs = re.split(r'[,;\n]', rename_map_raw)
-                        for pair in pairs:
-                            if ':' in pair:
-                                k, v = pair.split(':', 1)
-                                rename_dict[k.strip()] = v.strip()
-                            elif '->' in pair:
-                                k, v = pair.split('->', 1)
-                                rename_dict[k.strip()] = v.strip()
-                            elif '=' in pair:
-                                k, v = pair.split('=', 1)
-                                rename_dict[k.strip()] = v.strip()
-
-                    query = f"'{staging_id}' in parents and trashed = false"
-                    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-                    files = results.get("files", [])
-
-                    for f in files:
-                        f_id = f['id']
-                        f_name = f['name']
-                        
-                        junk_keywords = [j.strip() for j in junk_notes.split(',') if j.strip()]
-                        is_junk = any(junk in f_name for junk in junk_keywords)
-
-                        if is_junk:
-                            drive_service.files().delete(fileId=f_id).execute()
-                            continue
-                        
-                        new_name = rename_dict.get(f_name, f_name)
-                        update_body = {'name': new_name} if new_name != f_name else None
-                        
-                        drive_service.files().update(
-                            fileId=f_id,
-                            addParents=target_folder_id,
-                            removeParents=staging_id,
-                            body=update_body,
-                            supportsAllDrives=True
-                        ).execute()
-
-                    drive_service.files().delete(fileId=staging_id).execute()
-
-                    queue_ws.update_cell(idx, 5, "Sorted & Relocated")
-                    queue_ws.update_cell(idx, 6, "")
-                    queue_ws.update_cell(idx, 10, "Ready for Processing")
-                    
-                    # --- TWO-WAY COUNTER SYNCHRONIZATION ---
-                    # --- TWO-WAY COUNTER SYNCHRONIZATION ---
-                    if not is_short:
-                        try:
-                            # 1. Update Long_Form_Tracker (Column F)
-                            long_ws = sheet.worksheet("Long_Form_Tracker")
-                            long_records = long_ws.get_all_records()
-                            for l_idx, l_row in enumerate(long_records, start=2):
-                                l_title = str(l_row.get("Title") or l_row.get("Series Title") or "").strip()
-                                if l_title.lower() == series_name.strip().lower():
-                                    curr_dl = l_row.get("Downloaded Chapters", 0)
-                                    new_dl = int(curr_dl) + 1 if str(curr_dl).isdigit() else 1
-                                    headers = long_ws.row_values(1)
-                                    col_dl = headers.index("Downloaded Chapters") + 1 if "Downloaded Chapters" in headers else 6
-                                    long_ws.update_cell(l_idx, col_dl, new_dl)
-                                    break
-                                    
-                            # 2. Update Master Controller (Column B)
-                            master_sheet = gc.open_by_key(MASTER_CONTROLLER_ID).sheet1
-                            m_records = master_sheet.get_all_records()
-                            for m_idx, m_row in enumerate(m_records, start=2):
-                                if str(m_row.get("Name", "")).strip().lower() == series_name.strip().lower():
-                                    curr_tot = m_row.get("Total Chapters", 0)
-                                    new_tot = int(curr_tot) + 1 if str(curr_tot).isdigit() else 1
-                                    master_sheet.update_cell(m_idx, 2, new_tot) # Col B is index 2
-                                    break
-                        except Exception as sync_err:
-                            print(f"[DEBUG] Failed to update chapter counters: {sync_err}")
-
-                except Exception as e:
-                    print(f"Relocation Error for Row {idx} ({series_name}): {e}")
+          # Update the cell so it reflects the purge in your sheet
+          if deleted:
+            short_ws.update_cell(c_idx, col_folder, "Purged / Deleted")
 
     except Exception as e:
-        print(f"Relocation Engine Failed: {e}")
+      print(f"Shorts Tracker Cleanup Error: {e}")
 
-
-# Module 7: Master Cleanup Engine (Step 5)
-# FIX: Fully restored to safely purge Shorts and Long-Form junk after delivery
-def execute_staging_cleanup(gc, drive_service):
-    try:
-        sheet = gc.open_by_key(SPREADSHEET_ID)
-
-        # 1. SHORT-FORM CLEANUP
-        try:
-            short_ws = sheet.worksheet("Shorts_Tracker")
-            short_records = short_ws.get_all_records()
-            for c_idx, row in enumerate(short_records, start=2):
-                folder_id = str(row.get("Short Working Folder ID", "")).strip()
-                video_link = str(row.get("YouTube Shorts Link", "")).strip()
-                if folder_id and video_link.startswith("http"):
-                    try:
-                        drive_service.files().delete(fileId=folder_id).execute()
-                    except Exception:
-                        pass
-        except Exception as e:
-            print(f"Shorts Tracker Cleanup Error: {e}")
+    # 2. LONG-FORM SCRIPT/MAP CLEANUP (Keep your existing long-form logic below this)
+    # ...
 
         # 2. LONG-FORM SCRIPT/MAP CLEANUP
         try:
