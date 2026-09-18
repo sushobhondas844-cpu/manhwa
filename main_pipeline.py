@@ -493,6 +493,7 @@ def execute_relocation(gc, drive_service):
     print(f"Relocation Engine Failed: {e}")
 
 
+# Module 7: Master Cleanup Engine
 def execute_staging_cleanup(gc, drive_service):
   try:
     sheet = gc.open_by_key(SPREADSHEET_ID)
@@ -522,7 +523,7 @@ def execute_staging_cleanup(gc, drive_service):
         ) and "PURGED" not in folder_id.upper():
           deleted = False
 
-          # Option 1: Direct ID deletion (if cell contains a valid 25+ char alphanumeric ID)
+          # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
           if folder_id and len(folder_id) > 20 and " " not in folder_id:
             try:
               drive_service.files().delete(fileId=folder_id).execute()
@@ -568,46 +569,61 @@ def execute_staging_cleanup(gc, drive_service):
     except Exception as e:
       print(f"Shorts Tracker Cleanup Error: {e}")
 
-    # 2. LONG-FORM SCRIPT/MAP CLEANUP (Keep your existing long-form logic below this)
-    # ...
+    # 2. LONG-FORM SCRIPT/MAP CLEANUP
+    try:
+      long_ws = sheet.worksheet("Long_Form_Tracker")
+      long_records = long_ws.get_all_records()
+      for c_idx, row in enumerate(long_records, start=2):
+        folder_id = str(row.get("Folder ID", "")).strip()
+        status = str(row.get("Long-Form Video Status", "")).strip().upper()
+        chapter_name = str(row.get("Chapter Name", "")).strip()
+        safe_chapter = chapter_name.replace(".", "_").replace(" ", "_")
 
-        # 2. LONG-FORM SCRIPT/MAP CLEANUP
-        try:
-            long_ws = sheet.worksheet("Long_Form_Tracker")
-            long_records = long_ws.get_all_records()
-            for c_idx, row in enumerate(long_records, start=2):
-                folder_id = str(row.get("Folder ID", "")).strip()
-                status = str(row.get("Long-Form Video Status", "")).strip().upper()
-                chapter_name = str(row.get("Chapter Name", "")).strip()
-                safe_chapter = chapter_name.replace('.', '_').replace(' ', '_')
-
-                if folder_id and status in ["DONE", "DELIVERED", "POSTED"]:
-                    try:
-                        query = f"'{folder_id}' in parents and trashed = false"
-                        results = drive_service.files().list(q=query, fields="files(id, name)", pageSize=1000).execute()
-                        for f in results.get('files', []):
-                            fname = f['name']
-                            if fname.endswith('.json') or '_map' in fname:
-                                drive_service.files().delete(fileId=f['id']).execute()
-                    except Exception:
-                        pass
-                    try:
-                        vault_query = "name = 'Nexus_Script_Vault' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-                        vault_results = drive_service.files().list(q=vault_query, fields="files(id)").execute()
-                        if vault_results.get('files'):
-                            vault_id = vault_results['files'][0]['id']
-                            script_filename = f"script_{safe_chapter}.json"
-                            script_query = f"'{vault_id}' in parents and name = '{script_filename}' and trashed = false"
-                            script_results = drive_service.files().list(q=script_query, fields="files(id)").execute()
-                            for sf in script_results.get('files', []):
-                                drive_service.files().delete(fileId=sf['id']).execute()
-                    except Exception:
-                        pass
-        except Exception as e:
-            print(f"Long-Form Tracker Cleanup Error: {e}")
-
+        if folder_id and status in ["DONE", "DELIVERED", "POSTED"]:
+          try:
+            query = f"'{folder_id}' in parents and trashed = false"
+            results = (
+                drive_service.files()
+                .list(q=query, fields="files(id, name)", pageSize=1000)
+                .execute()
+            )
+            for f in results.get("files", []):
+              fname = f["name"]
+              if fname.endswith(".json") or "_map" in fname:
+                drive_service.files().delete(fileId=f["id"]).execute()
+          except Exception:
+            pass
+          try:
+            vault_query = (
+                "name = 'Nexus_Script_Vault' and mimeType ="
+                " 'application/vnd.google-apps.folder' and trashed = false"
+            )
+            vault_results = (
+                drive_service.files()
+                .list(q=vault_query, fields="files(id)")
+                .execute()
+            )
+            if vault_results.get("files"):
+              vault_id = vault_results["files"][0]["id"]
+              script_filename = f"script_{safe_chapter}.json"
+              script_query = (
+                  f"'{vault_id}' in parents and name = '{script_filename}' and"
+                  " trashed = false"
+              )
+              script_results = (
+                  drive_service.files()
+                  .list(q=script_query, fields="files(id)")
+                  .execute()
+              )
+              for sf in script_results.get("files", []):
+                drive_service.files().delete(fileId=sf["id"]).execute()
+          except Exception:
+            pass
     except Exception as e:
-        print(f"Master Cleanup Engine Failed: {e}")
+      print(f"Long-Form Tracker Cleanup Error: {e}")
+
+  except Exception as e:
+    print(f"Master Cleanup Engine Failed: {e}")
 
 
 # Module 8: Main Workflow Engine
