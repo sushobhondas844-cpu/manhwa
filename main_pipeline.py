@@ -669,54 +669,46 @@ def execute_staging_cleanup(gc, drive_service):
                 headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
 
             deleted = False
-          # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
-          if folder_id and len(folder_id) > 20 and " " not in folder_id:
-            try:
-              drive_service.files().delete(fileId=folder_id).execute()
-              deleted = True
-              print(
-                  f"[CLEANUP] Deleted {series_name} via stored ID: {folder_id}"
-              )
-            except Exception as e:
-              err_str = str(e)
-              if "404" in err_str or "notFound" in err_str:
-                # File already deleted in a previous run — treat as purged
-                deleted = True
-                print(f"[CLEANUP] {series_name} folder already gone (404) — marking as purged")
-              else:
-                print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
+            # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
+            if folder_id and len(folder_id) > 20 and " " not in folder_id:
+                try:
+                    drive_service.files().delete(fileId=folder_id).execute()
+                    deleted = True
+                    print(f"[CLEANUP] Deleted {series_name} via stored ID: {folder_id}")
+                except Exception as e:
+                    err_str = str(e)
+                    if "404" in err_str or "notFound" in err_str:
+                        # File already deleted in a previous run — treat as purged
+                        deleted = True
+                        print(f"[CLEANUP] {series_name} folder already gone (404) — marking as purged")
+                    else:
+                        print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
 
-          # Option 2: Fallback name-based lookup inside Short_Form_Manhwa
-          if not deleted and series_name:
-            safe_name = series_name.replace("'", "\\'")
-            query = (
-                f"'{SHORT_FORM_ROOT_ID}' in parents and name = '{safe_name}'"
-                " and mimeType = 'application/vnd.google-apps.folder' and"
-                " trashed = false"
-            )
-            res = (
-                drive_service.files()
-                .list(q=query, fields="files(id, name)", supportsAllDrives=True)
-                .execute()
-            )
-            matched_folders = res.get("files", [])
-            for mf in matched_folders:
-              try:
-                drive_service.files().delete(fileId=mf["id"]).execute()
-                deleted = True
-                print(
-                    f"[CLEANUP] Deleted {series_name} by folder name:"
-                    f" {mf['id']}"
+            # Option 2: Fallback name-based lookup inside Short_Form_Manhwa
+            if not deleted and series_name:
+                safe_name = series_name.replace("'", "\\'")
+                query = (
+                    f"'{SHORT_FORM_ROOT_ID}' in parents and name = '{safe_name}'"
+                    " and mimeType = 'application/vnd.google-apps.folder' and"
+                    " trashed = false"
                 )
-              except Exception as e:
-                print(
-                    f"[DEBUG] Failed to delete name-matched folder"
-                    f" {mf['id']}: {e}"
+                res = (
+                    drive_service.files()
+                    .list(q=query, fields="files(id, name)", supportsAllDrives=True)
+                    .execute()
                 )
+                matched_folders = res.get("files", [])
+                for mf in matched_folders:
+                    try:
+                        drive_service.files().delete(fileId=mf["id"]).execute()
+                        deleted = True
+                        print(f"[CLEANUP] Deleted {series_name} by folder name: {mf['id']}")
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to delete name-matched folder {mf['id']}: {e}")
 
-          # Update the cell so it reflects the purge in your sheet
-          if deleted:
-            short_ws.update_cell(c_idx, col_folder, "Purged / Deleted")
+            # Update the cell so it reflects the purge in your sheet
+            if deleted:
+                short_ws.update_cell(c_idx, col_folder, "Purged / Deleted")
 
     except Exception as e:
       print(f"Shorts Tracker Cleanup Error: {e}")
