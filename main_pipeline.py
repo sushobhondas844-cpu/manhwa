@@ -495,8 +495,9 @@ def execute_relocation(gc, drive_service):
   except Exception as e:
     print(f"Relocation Engine Failed: {e}")
 
-# Module: YouTube Shorts Metrics Engine
-# Water function: Extracts live view counts, like tallies, and exact upload timestamps for published shorts, automatically appending missing tracking columns to row 1 without shifting existing headers.
+# Module: YouTube Shorts Metrics Engine (API Key Edition)
+# Water function: Extracts live view counts, like tallies, and exact upload timestamps for published shorts using a standard Google Cloud API key, bypassing all OAuth token parsing to prevent JSON decoding crashes.
+
 def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
     dash_char = chr(45)
     id_pattern = rf"(?:v=|/shorts/|youtu\.be/)([\w{dash_char}]{{11}})"
@@ -527,26 +528,19 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
     views = 0
     likes = 0
     upload_time_ist = "Unknown"
-    
-    token_raw = os.environ.get("YOUTUBE_OAUTH_TOKEN")
     fetched = False
     
-    if token_raw:
+    # 1. Primary Engine: Direct API Key Request
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if api_key:
         try:
-            token_dict = json.loads(token_raw)
-            creds = OAuthCredentials.from_authorized_user_info(token_dict)
-            # Refresh the token if it has expired (fixes invalid_grant errors)
-            if not creds.valid:
-                if creds.expired and creds.refresh_token:
-                    creds.refresh(GoogleAuthRequest())
-                    print(f"[METRICS] OAuth token refreshed successfully for {video_id}")
-                else:
-                    print(f"[METRICS] OAuth token invalid and cannot be refreshed for {video_id} — re-authorize the credential")
-                    raise Exception("Token expired and no refresh_token available")
-            yt_service = build("youtube", "v3", credentials=creds)
-            
-            resp = yt_service.videos().list(part="snippet,statistics", id=video_id).execute()
-            items = resp.get("items", [])
+            url = (
+                f"https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,statistics&id={video_id}&key={api_key}"
+            )
+            resp = requests.get(url, timeout=15)
+            data = resp.json()
+            items = data.get("items", [])
             if items:
                 stats = items[0].get("statistics", {})
                 snippet = items[0].get("snippet", {})
@@ -559,45 +553,19 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
                     ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
                     upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
                 fetched = True
-        except Exception as api_err:
-            print(f"[METRICS] API request failed for {video_id}: {api_err}")
+                print(f"[METRICS] API key fetch succeeded for {video_id}")
+            else:
+                print(f"[METRICS] API key fetch returned no data for {video_id}")
+        except Exception as key_err:
+            print(f"[METRICS] API key fetch failed for {video_id}: {key_err}")
 
-    # Fallback 1: Use YouTube Data API v3 with a simple API key (no OAuth needed for public videos)
-    if not fetched:
-        api_key = os.environ.get("YOUTUBE_API_KEY")
-        if api_key:
-            try:
-                url = (
-                    f"https://www.googleapis.com/youtube/v3/videos"
-                    f"?part=snippet,statistics&id={video_id}&key={api_key}"
-                )
-                resp = requests.get(url, timeout=15)
-                data = resp.json()
-                items = data.get("items", [])
-                if items:
-                    stats = items[0].get("statistics", {})
-                    snippet = items[0].get("snippet", {})
-                    views = int(stats.get("viewCount", 0))
-                    likes = int(stats.get("likeCount", 0))
-                    raw_pub = snippet.get("publishedAt", "")
-                    if raw_pub:
-                        utc_clean = raw_pub.replace("Z", "+00:00")
-                        utc_dt = datetime.fromisoformat(utc_clean)
-                        ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
-                        upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
-                    fetched = True
-                    print(f"[METRICS] API key fallback succeeded for {video_id}")
-            except Exception as key_err:
-                print(f"[METRICS] API key fallback failed for {video_id}: {key_err}")
-
-    # Fallback 2: yt-dlp (last resort, may be blocked by YouTube without cookies)
+    # 2. Fallback Engine: headless yt-dlp
     if not fetched:
         try:
             from yt_dlp import YoutubeDL
             ydl_opts = {
                 "quiet": True,
                 "skip_download": True,
-                # Use deno JS runtime if available — suppresses the JS runtime warning
                 "extractor_args": {"youtube": {"skip": ["hls", "dash"]}},
             }
             with YoutubeDL(ydl_opts) as ydl:
@@ -615,6 +583,26 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
 
     if not fetched:
         return current_headers
+
+    if views == 0:
+        perf_status = "Freshly Uploaded"
+    elif views >= 1000:
+        perf_status = "Viral Breakout"
+    elif views >= 300:
+        perf_status = "Strong Growth"
+    else:
+        perf_status = "Steady Traction"
+
+    now_ist = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S IST")
+
+    short_ws.update_cell(row_idx, existing_lookup["youtube views"], views)
+    short_ws.update_cell(row_idx, existing_lookup["youtube likes"], likes)
+    short_ws.update_cell(row_idx, existing_lookup["upload date and time"], upload_time_ist)
+    short_ws.update_cell(row_idx, existing_lookup["performance status"], perf_status)
+    short_ws.update_cell(row_idx, existing_lookup["last checked date"], now_ist)
+    print(f"[METRICS] Updated Row {row_idx}: {views} views, {likes} likes, uploaded at {upload_time_ist}")
+    
+    return current_headers
 
     if views == 0:
         perf_status = "Freshly Uploaded"
