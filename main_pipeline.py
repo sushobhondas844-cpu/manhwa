@@ -615,24 +615,19 @@ def execute_staging_cleanup(gc, drive_service):
         folder_id = str(row.get("Short Working Folder ID", "")).strip()
         video_link = str(row.get("YouTube Shorts Link", "")).strip()
         status = str(row.get("Video Production Status", "")).strip().upper()
-
 # Trigger cleanup ONLY IF video link exists AND status is Posted, and not already purged
         if (
             video_link.startswith("http") and status == "POSTED"
         ) and "PURGED" not in folder_id.upper():
-            
-            # Hook: Sync metrics while video link is active
-            if video_link.startswith("http"):
-                headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
+          
+          # Hook: Sync metrics while video link is active
+          if video_link.startswith("http"):
+            headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
 
-            deleted = False
+          deleted = False
+
           # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
           if folder_id and len(folder_id) > 20 and " " not in folder_id:
-            try:
-              drive_service.files().delete(fileId=folder_id).execute()
-              deleted = True
-              print(
-                  f"[CLEANUP] Deleted {series_name} via stored ID: {folder_id}"
               )
             except Exception as e:
               print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
