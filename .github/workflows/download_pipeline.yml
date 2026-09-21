@@ -37,7 +37,7 @@ jobs:
         env:
           NEXUS_DRIVE_CREDS: ${{ secrets.NEXUS_DRIVE_CREDS }}
           DRIVE_OAUTH_TOKEN: ${{ secrets.DRIVE_OAUTH_TOKEN }}
-          YOUTUBE_OAUTH_TOKEN: ${{ secrets.DAILY_FUN_FACTS_TOKEN }} 
+          YOUTUBE_OAUTH_TOKEN: ${{ secrets.YOUTUBE_API_KEY }} 
         run: |
           python main_pipeline.py
 
