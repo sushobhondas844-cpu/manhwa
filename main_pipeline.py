@@ -2,6 +2,8 @@ import json
 import os
 import re
 import time
+import pytz
+from datetime import datetime
 from urllib.parse import urlparse
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.oauth2.service_account import Credentials as SACredentials
@@ -492,7 +494,101 @@ def execute_relocation(gc, drive_service):
   except Exception as e:
     print(f"Relocation Engine Failed: {e}")
 
+# Module: YouTube Shorts Metrics Engine
+# Water function: Extracts live view counts, like tallies, and exact upload timestamps for published shorts, automatically appending missing tracking columns to row 1 without shifting existing headers.
+def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
+    dash_char = chr(45)
+    id_pattern = rf"(?:v=|/shorts/|youtu\.be/)([\w{dash_char}]{{11}})"
+    match = re.search(id_pattern, str(video_link))
+    if not match:
+        return current_headers
 
+    video_id = match.group(1)
+    
+    needed_headers = [
+        "YouTube Views",
+        "YouTube Likes",
+        "Upload Date and Time",
+        "Performance Status",
+        "Last Checked Date"
+    ]
+    
+    existing_lookup = {str(h).strip().lower(): i + 1 for i, h in enumerate(current_headers)}
+    missing_headers = [h for h in needed_headers if h.lower() not in existing_lookup]
+    
+    if missing_headers:
+        start_col = len(current_headers) + 1
+        for offset, header_name in enumerate(missing_headers):
+            short_ws.update_cell(1, start_col + offset, header_name)
+        current_headers = short_ws.row_values(1)
+        existing_lookup = {str(h).strip().lower(): i + 1 for i, h in enumerate(current_headers)}
+
+    views = 0
+    likes = 0
+    upload_time_ist = "Unknown"
+    
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    fetched = False
+    
+    if api_key:
+        try:
+            yt_service = build("youtube", "v3", developerKey=api_key)
+            resp = yt_service.videos().list(part="snippet,statistics", id=video_id).execute()
+            items = resp.get("items", [])
+            if items:
+                stats = items[0].get("statistics", {})
+                snippet = items[0].get("snippet", {})
+                views = int(stats.get("viewCount", 0))
+                likes = int(stats.get("likeCount", 0))
+                raw_pub = snippet.get("publishedAt", "")
+                if raw_pub:
+                    utc_clean = raw_pub.replace("Z", "+00:00")
+                    utc_dt = datetime.fromisoformat(utc_clean)
+                    ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
+                    upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
+                fetched = True
+        except Exception as api_err:
+            print(f"[METRICS] API request failed for {video_id}: {api_err}")
+
+    if not fetched:
+        try:
+            from yt_dlp import YoutubeDL
+            ydl_opts = {"quiet": True, "skip_download": True}
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_link, download=False)
+                views = int(info.get("view_count") or 0)
+                likes = int(info.get("like_count") or 0)
+                ts = info.get("timestamp")
+                if ts:
+                    utc_dt = datetime.fromtimestamp(ts, pytz.utc)
+                    ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
+                    upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
+                fetched = True
+        except Exception as dl_err:
+            print(f"[METRICS] yt_dlp fallback failed for {video_id}: {dl_err}")
+
+    if not fetched:
+        return current_headers
+
+    if views == 0:
+        perf_status = "Freshly Uploaded"
+    elif views >= 1000:
+        perf_status = "Viral Breakout"
+    elif views >= 300:
+        perf_status = "Strong Growth"
+    else:
+        perf_status = "Steady Traction"
+
+    now_ist = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S IST")
+
+    short_ws.update_cell(row_idx, existing_lookup["youtube views"], views)
+    short_ws.update_cell(row_idx, existing_lookup["youtube likes"], likes)
+    short_ws.update_cell(row_idx, existing_lookup["upload date and time"], upload_time_ist)
+    short_ws.update_cell(row_idx, existing_lookup["performance status"], perf_status)
+    short_ws.update_cell(row_idx, existing_lookup["last checked date"], now_ist)
+    print(f"[METRICS] Updated Row {row_idx}: {views} views, {likes} likes, uploaded at {upload_time_ist}")
+    
+    return current_headers
 # Module 7: Master Cleanup Engine
 def execute_staging_cleanup(gc, drive_service):
   try:
@@ -521,7 +617,12 @@ def execute_staging_cleanup(gc, drive_service):
         if (
             video_link.startswith("http") or status == "POSTED"
         ) and "PURGED" not in folder_id.upper():
-          deleted = False
+            
+            # Hook: Sync metrics while video link is active
+            if video_link.startswith("http"):
+                headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
+
+            deleted = False
 
           # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
           if folder_id and len(folder_id) > 20 and " " not in folder_id:
