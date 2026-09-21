@@ -498,131 +498,7 @@ def execute_relocation(gc, drive_service):
 # Module: YouTube Shorts Metrics Engine (API Key Edition)
 # Water function: Extracts live view counts, like tallies, and exact upload timestamps for published shorts using a standard Google Cloud API key, bypassing all OAuth token parsing to prevent JSON decoding crashes.
 
-def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
-    dash_char = chr(45)
-    id_pattern = rf"(?:v=|/shorts/|youtu\.be/)([\w{dash_char}]{{11}})"
-    match = re.search(id_pattern, str(video_link))
-    if not match:
-        return current_headers
 
-    video_id = match.group(1)
-    
-    needed_headers = [
-        "YouTube Views",
-        "YouTube Likes",
-        "Upload Date and Time",
-        "Performance Status",
-        "Last Checked Date"
-    ]
-    
-    existing_lookup = {str(h).strip().lower(): i + 1 for i, h in enumerate(current_headers)}
-    missing_headers = [h for h in needed_headers if h.lower() not in existing_lookup]
-    
-    if missing_headers:
-        start_col = len(current_headers) + 1
-        for offset, header_name in enumerate(missing_headers):
-            short_ws.update_cell(1, start_col + offset, header_name)
-        current_headers = short_ws.row_values(1)
-        existing_lookup = {str(h).strip().lower(): i + 1 for i, h in enumerate(current_headers)}
-
-    views = 0
-    likes = 0
-    upload_time_ist = "Unknown"
-    fetched = False
-    
-    # 1. Primary Engine: Direct API Key Request
-    api_key = os.environ.get("YOUTUBE_API_KEY")
-    if api_key:
-        try:
-            url = (
-                f"https://www.googleapis.com/youtube/v3/videos"
-                f"?part=snippet,statistics&id={video_id}&key={api_key}"
-            )
-            resp = requests.get(url, timeout=15)
-            data = resp.json()
-            items = data.get("items", [])
-            if items:
-                stats = items[0].get("statistics", {})
-                snippet = items[0].get("snippet", {})
-                views = int(stats.get("viewCount", 0))
-                likes = int(stats.get("likeCount", 0))
-                raw_pub = snippet.get("publishedAt", "")
-                if raw_pub:
-                    utc_clean = raw_pub.replace("Z", "+00:00")
-                    utc_dt = datetime.fromisoformat(utc_clean)
-                    ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
-                    upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
-                fetched = True
-                print(f"[METRICS] API key fetch succeeded for {video_id}")
-            else:
-                print(f"[METRICS] API key fetch returned no data for {video_id}")
-        except Exception as key_err:
-            print(f"[METRICS] API key fetch failed for {video_id}: {key_err}")
-
-    # 2. Fallback Engine: headless yt-dlp
-    if not fetched:
-        try:
-            from yt_dlp import YoutubeDL
-            ydl_opts = {
-                "quiet": True,
-                "skip_download": True,
-                "extractor_args": {"youtube": {"skip": ["hls", "dash"]}},
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_link, download=False)
-                views = int(info.get("view_count") or 0)
-                likes = int(info.get("like_count") or 0)
-                ts = info.get("timestamp")
-                if ts:
-                    utc_dt = datetime.fromtimestamp(ts, pytz.utc)
-                    ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
-                    upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
-                fetched = True
-        except Exception as dl_err:
-            print(f"[METRICS] yt_dlp fallback failed for {video_id}: {dl_err}")
-
-    if not fetched:
-        return current_headers
-
-    if views == 0:
-        perf_status = "Freshly Uploaded"
-    elif views >= 1000:
-        perf_status = "Viral Breakout"
-    elif views >= 300:
-        perf_status = "Strong Growth"
-    else:
-        perf_status = "Steady Traction"
-
-    now_ist = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S IST")
-
-    short_ws.update_cell(row_idx, existing_lookup["youtube views"], views)
-    short_ws.update_cell(row_idx, existing_lookup["youtube likes"], likes)
-    short_ws.update_cell(row_idx, existing_lookup["upload date and time"], upload_time_ist)
-    short_ws.update_cell(row_idx, existing_lookup["performance status"], perf_status)
-    short_ws.update_cell(row_idx, existing_lookup["last checked date"], now_ist)
-    print(f"[METRICS] Updated Row {row_idx}: {views} views, {likes} likes, uploaded at {upload_time_ist}")
-    
-    return current_headers
-
-    if views == 0:
-        perf_status = "Freshly Uploaded"
-    elif views >= 1000:
-        perf_status = "Viral Breakout"
-    elif views >= 300:
-        perf_status = "Strong Growth"
-    else:
-        perf_status = "Steady Traction"
-
-    now_ist = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S IST")
-
-    short_ws.update_cell(row_idx, existing_lookup["youtube views"], views)
-    short_ws.update_cell(row_idx, existing_lookup["youtube likes"], likes)
-    short_ws.update_cell(row_idx, existing_lookup["upload date and time"], upload_time_ist)
-    short_ws.update_cell(row_idx, existing_lookup["performance status"], perf_status)
-    short_ws.update_cell(row_idx, existing_lookup["last checked date"], now_ist)
-    print(f"[METRICS] Updated Row {row_idx}: {views} views, {likes} likes, uploaded at {upload_time_ist}")
-    
-    return current_headers
 # Module 7: Master Cleanup Engine
 def execute_staging_cleanup(gc, drive_service):
   try:
@@ -652,9 +528,7 @@ def execute_staging_cleanup(gc, drive_service):
             video_link.startswith("http") and status == "POSTED"
         ) and "PURGED" not in folder_id.upper():
             
-            # Hook: Sync metrics while video link is active
-            if video_link.startswith("http"):
-                headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
+           
 
             deleted = False
             # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
@@ -802,11 +676,100 @@ def process_queue():
     # Note: Relocation and Cleanup are deliberately decoupled from the process_queue loop
 
 
-if __name__ == "__main__":
-    # 1. Download pending links
-    process_queue()
+# Module: Batch Metrics Engine
+# Water function: Scans all rows for valid video links, queries the API in batches of 50, and updates the sheet automatically in a single bulk request.
+def execute_batch_metrics(gc):
+    sheet = gc.open_by_key(SPREADSHEET_ID)
+    tracker = sheet.worksheet("Shorts_Tracker")
+    records = tracker.get_all_records()
+    headers = tracker.row_values(1)
     
-    # 2. Relocate audited folders and run post-publish cleanup
+    needed_cols = ["YouTube Views", "YouTube Likes", "Upload Date and Time", "Performance Status", "Last Checked Date"]
+    col_map = {str(h).strip().lower(): i + 1 for i, h in enumerate(headers)}
+    
+    missing = [c for c in needed_cols if c.lower() not in col_map]
+    if missing:
+        start = len(headers) + 1
+        for idx, col_name in enumerate(missing):
+            tracker.update_cell(1, start + idx, col_name)
+        headers = tracker.row_values(1)
+        col_map = {str(h).strip().lower(): i + 1 for i, h in enumerate(headers)}
+        
+    dash_char = chr(45)
+    pattern = rf"(?:v=|/shorts/|youtu\.be/)([\w{dash_char}]{{11}})"
+    
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        print("[METRICS] No API key found. Skipping metrics sync.")
+        return
+        
+    video_map = {}
+    for r_idx, row in enumerate(records, start=2):
+        link = str(row.get("YouTube Shorts Link", "")).strip()
+        if link.startswith("http"):
+            match = re.search(pattern, link)
+            if match:
+                video_map[match.group(1)] = r_idx
+                
+    video_ids = list(video_map.keys())
+    if not video_ids:
+        print("[METRICS] No YouTube links found to track.")
+        return
+        
+    ist_tz = pytz.timezone("Asia/Kolkata")
+    updates = []
+    
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={','.join(chunk)}&key={api_key}"
+        try:
+            resp = requests.get(url, timeout=15)
+            data = resp.json()
+            for item in data.get("items", []):
+                vid = item["id"]
+                stats = item.get("statistics", {})
+                snip = item.get("snippet", {})
+                
+                v = int(stats.get("viewCount", 0))
+                l = int(stats.get("likeCount", 0))
+                
+                pub = snip.get("publishedAt", "")
+                up_time = "Unknown"
+                if pub:
+                    clean_utc = pub.replace("Z", "+00:00")
+                    dt_utc = datetime.fromisoformat(clean_utc)
+                    dt_ist = dt_utc.astimezone(ist_tz)
+                    up_time = dt_ist.strftime("%d/%m/%Y %H:%M:%S IST")
+                    
+                if v == 0:
+                    perf = "Freshly Uploaded"
+                elif v >= 1000:
+                    perf = "Viral Breakout"
+                elif v >= 300:
+                    perf = "Strong Growth"
+                else:
+                    perf = "Steady Traction"
+                    
+                now_ist = datetime.now(ist_tz).strftime("%d/%m/%Y %H:%M:%S IST")
+                r_target = video_map[vid]
+                
+                updates.append({"range": gspread.utils.rowcol_to_a1(r_target, col_map["youtube views"]), "values": [[v]]})
+                updates.append({"range": gspread.utils.rowcol_to_a1(r_target, col_map["youtube likes"]), "values": [[l]]})
+                updates.append({"range": gspread.utils.rowcol_to_a1(r_target, col_map["upload date and time"]), "values": [[up_time]]})
+                updates.append({"range": gspread.utils.rowcol_to_a1(r_target, col_map["performance status"]), "values": [[perf]]})
+                updates.append({"range": gspread.utils.rowcol_to_a1(r_target, col_map["last checked date"]), "values": [[now_ist]]})
+                
+                print(f"[METRICS] Processed Row {r_target}: {v} views, {l} likes")
+        except Exception as e:
+            print(f"[METRICS] Batch failed: {e}")
+            
+    if updates:
+        tracker.batch_update(updates, value_input_option="USER_ENTERED")
+        print(f"[METRICS] Successfully bulk updated {len(updates)//5} videos.")
+
+if __name__ == "__main__":
+    process_queue()
     gc, drive_service = get_google_services()
     execute_relocation(gc, drive_service)
     execute_staging_cleanup(gc, drive_service)
+    execute_batch_metrics(gc)
