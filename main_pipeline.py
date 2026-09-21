@@ -628,9 +628,12 @@ def execute_staging_cleanup(gc, drive_service):
 
           # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
           if folder_id and len(folder_id) > 20 and " " not in folder_id:
-              )
+            try:
+              drive_service.files().delete(fileId=folder_id).execute()
+              deleted = True
+              print(f"[CLEANUP] Deleted {series_name} by folder ID: {folder_id}")
             except Exception as e:
-              print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
+             print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
 
           # Option 2: Fallback name-based lookup inside Short_Form_Manhwa
           if not deleted and series_name:
