@@ -527,12 +527,15 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
     likes = 0
     upload_time_ist = "Unknown"
     
-    api_key = os.environ.get("YOUTUBE_API_KEY")
+    token_raw = os.environ.get("YOUTUBE_OAUTH_TOKEN")
     fetched = False
     
-    if api_key:
+    if token_raw:
         try:
-            yt_service = build("youtube", "v3", developerKey=api_key)
+            token_dict = json.loads(token_raw)
+            creds = OAuthCredentials.from_authorized_user_info(token_dict)
+            yt_service = build("youtube", "v3", credentials=creds)
+            
             resp = yt_service.videos().list(part="snippet,statistics", id=video_id).execute()
             items = resp.get("items", [])
             if items:
