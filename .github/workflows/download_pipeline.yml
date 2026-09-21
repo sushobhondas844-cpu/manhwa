@@ -17,21 +17,32 @@ jobs:
         with:
           python-version: '3.10'
 
+      # Module Description: Package Installation Step
+      # Water function: Installs base project requirements plus timezone and media extraction tools
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytz yt-dlp
 
+      # Module Description: Headless Browser Setup
+      # Water function: Downloads browser binaries and system libraries needed for DOM panel scraping
       - name: Install Playwright Chromium with Dependencies
         run: |
           playwright install --with-deps chromium
 
+      # Module Description: Main Pipeline Execution
+      # Water function: Passes storage and API secrets to the runtime environment and executes main pipeline
       - name: Execute Downloader Pipeline
         env:
           NEXUS_DRIVE_CREDS: ${{ secrets.NEXUS_DRIVE_CREDS }}
           DRIVE_OAUTH_TOKEN: ${{ secrets.DRIVE_OAUTH_TOKEN }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python main_pipeline.py
 
+      # Module Description: Diagnostic Artifact Capture
+      # Water function: Preserves browser view state for troubleshooting when navigation fails
       - name: Upload Debug Screenshot
         if: always()
         uses: actions/upload-artifact@v4
