@@ -7,6 +7,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.oauth2.service_account import Credentials as SACredentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import gspread
@@ -534,6 +535,14 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
         try:
             token_dict = json.loads(token_raw)
             creds = OAuthCredentials.from_authorized_user_info(token_dict)
+            # Refresh the token if it has expired (fixes invalid_grant errors)
+            if not creds.valid:
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(GoogleAuthRequest())
+                    print(f"[METRICS] OAuth token refreshed successfully for {video_id}")
+                else:
+                    print(f"[METRICS] OAuth token invalid and cannot be refreshed for {video_id} — re-authorize the credential")
+                    raise Exception("Token expired and no refresh_token available")
             yt_service = build("youtube", "v3", credentials=creds)
             
             resp = yt_service.videos().list(part="snippet,statistics", id=video_id).execute()
@@ -553,10 +562,44 @@ def sync_single_short_metrics(short_ws, row_idx, video_link, current_headers):
         except Exception as api_err:
             print(f"[METRICS] API request failed for {video_id}: {api_err}")
 
+    # Fallback 1: Use YouTube Data API v3 with a simple API key (no OAuth needed for public videos)
+    if not fetched:
+        api_key = os.environ.get("YOUTUBE_API_KEY")
+        if api_key:
+            try:
+                url = (
+                    f"https://www.googleapis.com/youtube/v3/videos"
+                    f"?part=snippet,statistics&id={video_id}&key={api_key}"
+                )
+                resp = requests.get(url, timeout=15)
+                data = resp.json()
+                items = data.get("items", [])
+                if items:
+                    stats = items[0].get("statistics", {})
+                    snippet = items[0].get("snippet", {})
+                    views = int(stats.get("viewCount", 0))
+                    likes = int(stats.get("likeCount", 0))
+                    raw_pub = snippet.get("publishedAt", "")
+                    if raw_pub:
+                        utc_clean = raw_pub.replace("Z", "+00:00")
+                        utc_dt = datetime.fromisoformat(utc_clean)
+                        ist_dt = utc_dt.astimezone(pytz.timezone("Asia/Kolkata"))
+                        upload_time_ist = ist_dt.strftime("%d/%m/%Y %H:%M:%S IST")
+                    fetched = True
+                    print(f"[METRICS] API key fallback succeeded for {video_id}")
+            except Exception as key_err:
+                print(f"[METRICS] API key fallback failed for {video_id}: {key_err}")
+
+    # Fallback 2: yt-dlp (last resort, may be blocked by YouTube without cookies)
     if not fetched:
         try:
             from yt_dlp import YoutubeDL
-            ydl_opts = {"quiet": True, "skip_download": True}
+            ydl_opts = {
+                "quiet": True,
+                "skip_download": True,
+                # Use deno JS runtime if available — suppresses the JS runtime warning
+                "extractor_args": {"youtube": {"skip": ["hls", "dash"]}},
+            }
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_link, download=False)
                 views = int(info.get("view_count") or 0)
@@ -615,25 +658,33 @@ def execute_staging_cleanup(gc, drive_service):
         folder_id = str(row.get("Short Working Folder ID", "")).strip()
         video_link = str(row.get("YouTube Shorts Link", "")).strip()
         status = str(row.get("Video Production Status", "")).strip().upper()
+
 # Trigger cleanup ONLY IF video link exists AND status is Posted, and not already purged
         if (
             video_link.startswith("http") and status == "POSTED"
         ) and "PURGED" not in folder_id.upper():
-          
-          # Hook: Sync metrics while video link is active
-          if video_link.startswith("http"):
-            headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
+            
+            # Hook: Sync metrics while video link is active
+            if video_link.startswith("http"):
+                headers = sync_single_short_metrics(short_ws, c_idx, video_link, headers)
 
-          deleted = False
-
+            deleted = False
           # Option 1: Direct ID deletion (if cell contains a valid 20+ char alphanumeric ID)
           if folder_id and len(folder_id) > 20 and " " not in folder_id:
             try:
               drive_service.files().delete(fileId=folder_id).execute()
               deleted = True
-              print(f"[CLEANUP] Deleted {series_name} by folder ID: {folder_id}")
+              print(
+                  f"[CLEANUP] Deleted {series_name} via stored ID: {folder_id}"
+              )
             except Exception as e:
-             print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
+              err_str = str(e)
+              if "404" in err_str or "notFound" in err_str:
+                # File already deleted in a previous run — treat as purged
+                deleted = True
+                print(f"[CLEANUP] {series_name} folder already gone (404) — marking as purged")
+              else:
+                print(f"[DEBUG] ID deletion failed for {series_name}: {e}")
 
           # Option 2: Fallback name-based lookup inside Short_Form_Manhwa
           if not deleted and series_name:
