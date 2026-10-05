@@ -704,8 +704,17 @@ def execute_batch_metrics(gc):
         return
         
     video_map = {}
+    status_col = col_map.get("video production status", 5)
+
     for r_idx, row in enumerate(records, start=2):
         link = str(row.get("YouTube Shorts Link", "")).strip()
+        status = str(row.get("Video Production Status", "")).strip()
+
+        # AUTO-PROMOTE: If YouTube link is present and status is "Video Rendered", update to "Posted"
+        if link.startswith("http") and status.lower() == "video rendered":
+            tracker.update_cell(r_idx, status_col, "Posted")
+            print(f"[STATUS] Promoted Row {r_idx} ({row.get('Title', '')}) from 'Video Rendered' to 'Posted'")
+
         if link.startswith("http"):
             match = re.search(pattern, link)
             if match:
